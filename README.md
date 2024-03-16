@@ -2,17 +2,17 @@
 
 ## 部署
 
-1. 准备工作
+### 1. 准备工作
 
    你需要有一个麦克风
 
-2. 克隆本项目
+### 2. 克隆本项目
 
    ```shell
    git clone git@github.com:fujr/snap_detect
    ```
 
-3. 准备python环境
+### 3. 准备python环境
 
    ```shell
    python -m venv venv
@@ -21,7 +21,7 @@
    pip install -r requirements.txt
    ```
 
-4. 启动
+### 4. 启动
 
    1. 训练（非必须）：使用record.py录制环境音和你的响指声音，录制完的文件默认在saved_audio目录下，你需要移动到dataset/train下
 
@@ -104,6 +104,3 @@
       ```
 
    
-
-
-
