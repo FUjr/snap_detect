@@ -271,4 +271,13 @@ CNN.compile(
 )
 CNN.fit(train, val, epochs=EPOCHS)
 CNN.evaluate(test,save=True)
-CNN.save(TF_MODEL , save_format='export')
+CNN.save(TF_MODEL , save_format='h5')
+LSTM = Sound_Classification_Model('LSTM')
+LSTM.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+    loss=tf.keras.losses.BinaryCrossentropy(),
+    metrics=['AUC','accuracy'],
+)
+LSTM.fit(train, val, epochs=EPOCHS)
+LSTM.evaluate(test,save=True)
+LSTM.save(TF_MODEL , save_format='h5')
