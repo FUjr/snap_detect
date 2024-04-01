@@ -5,18 +5,22 @@ import matplotlib.pyplot as plt
 from tensorflow.keras import layers
 from tensorflow.keras import models
 import time,os,json
+#向上取整
+UP_INT = lambda x: int(x) if x % 1 == 0 else int(x) + 1
 
 TRAIN_DATASET_PATH="dataset/train"
-NUM_MEL_BINS = 15
-EPOCHS = 100
+TEST_DATASET_PATH="dataset/tesst"
+NUM_MEL_BINS = 40
+EPOCHS = 200
 SIMPLE_RATE = 16000
-SECOND = 1
-BATCH_SIZE =32
-FRAME_LENGTH = 2000
-FRAME_STEP = 1000
-FRAME_NUM = int(16000 / FRAME_STEP - (FRAME_LENGTH / FRAME_STEP - 1))
-LOWER_EDGE_HERTZ = 1500
-UPPER_EDGE_HERTZ = 5500
+SAMPLE_LENGTH = 7680
+BATCH_SIZE = 32
+FRAME_LENGTH = 1024
+FRAME_STEP = 256
+FRAME_NUM = int(UP_INT(SAMPLE_LENGTH - FRAME_LENGTH) / FRAME_STEP + 1) 
+print(FRAME_NUM)
+LOWER_EDGE_HERTZ = 2000
+UPPER_EDGE_HERTZ = 6000
 DATE = time.strftime("%m%d_%H%M", time.localtime())
 DIR = 'model_%s' % DATE
 TF_MODEL = "%s/model_%s.%s"
@@ -32,17 +36,36 @@ if not os.path.exists(DIR):
 
 
 class Dataset:
-    def __init__(self, dataset_path,train_split=0.8, val_split=0.1, test_split=0.1):
+    def __init__(self, dataset_path,train_split=0.9, val_split=0.1):
         self.dataset_path = dataset_path
-        dataset = self._get_dataset()
-        if train_split + val_split + test_split != 1:
-            raise ValueError("train_split + val_split + test_split must be 1")
-        dataset = dataset.shuffle(100)
-        dataset = dataset.map(self._squeeze)
-        dataset = self._get_mel(dataset)
-        self.train_ds = dataset.take(int(len(dataset) * train_split)).cache().shuffle(100).prefetch(tf.data.AUTOTUNE)
-        self.val_ds = dataset.skip(int(len(dataset) * train_split)).take(int(len(dataset) * val_split)).cache().prefetch(tf.data.AUTOTUNE)
-        self.test_ds = dataset.skip(int(len(dataset) * (train_split + val_split))).cache().prefetch(tf.data.AUTOTUNE)
+        train_ds,val_ds = self._get_dataset(TRAIN_DATASET_PATH,0.1)
+        try:
+            test_ds = self._get_dataset(TEST_DATASET_PATH)
+        except:
+            test_ds = val_ds.shard(2,1)
+        train_ds = train_ds.shuffle(1000)
+        val_ds = val_ds.shuffle(1000)
+        test_ds = test_ds.shuffle(1000)
+        train_ds = train_ds.map(self._squeeze)
+        val_ds = val_ds.map(self._squeeze)
+        test_ds = test_ds.map(self._squeeze)
+        train_ds = self._get_mel(train_ds)
+        val_ds = self._get_mel(val_ds)
+        test_ds = self._get_mel(test_ds)
+        # train_ds = dataset.take(int(len(dataset) * train_split)).cache().shuffle(100).prefetch(tf.data.AUTOTUNE)
+        # val_ds = dataset.skip(int(len(dataset) * train_split)).take(int(len(dataset) * val_split)).cache().prefetch(tf.data.AUTOTUNE)
+        # test_ds = dataset.skip(int(len(dataset) * (train_split + val_split))).cache().prefetch(tf.data.AUTOTUNE)
+        # random_train = train_ds.map(self._random_multiply)
+        # random_val = val_ds.map(self._random_multiply)
+        # random_test = test_ds.map(self._random_multiply)
+        # self.train_ds = train_ds.concatenate(random_train)
+        # self.val_ds = val_ds.concatenate(random_val)
+        # self.test_ds = test_ds.concatenate(random_test)
+        self.train_ds = train_ds.cache().prefetch(tf.data.AUTOTUNE)
+        self.val_ds = val_ds.cache().prefetch(tf.data.AUTOTUNE)
+        self.test_ds = test_ds.cache().prefetch(tf.data.AUTOTUNE)
+
+
 
     def show(self,save=False):
         lines = BATCH_SIZE ** 0.5 if BATCH_SIZE ** 0.5 % 1 == 0 else BATCH_SIZE ** 0.5 + 1 
@@ -58,17 +81,47 @@ class Dataset:
                 plt.savefig(MEL_PNG % DIR)
             else:
                 plt.show()
-        
+    
+    def _trim_lowwest(self, audio, label):
+        '''
+        @param audio: 音频数据
+        @param label: 标签数据
+        @return audio: 截取最大值为中心随机偏移0.1s，并截断成0.5s的音频数据
+        '''
+        if (audio.shape[1] < 8000):
+            return audio, label
+        max_audio = tf.reduce_max(audio,axis=1)
+        max_audio_index = tf.argmax(max_audio)
+        #随机偏移0.1s
+        print(max_audio_index)
+        bias = tf.random.uniform(shape=(),minval=0,maxval=0.1,dtype=tf.float32)
+        mid = max_audio_index + int(SIMPLE_RATE * bias)
+        audio = audio[mid - int(SIMPLE_RATE / 2):mid + int(SIMPLE_RATE / 2)]
+        return audio, label        
+
     def _squeeze(self, audio, label):
         return tf.squeeze(audio,axis=-1), label
     
-    def _get_dataset(self):
-        return tf.keras.utils.audio_dataset_from_directory(
-            directory=self.dataset_path,
-            batch_size=BATCH_SIZE,
-            seed=np.random.randint(0,1000),
-            output_sequence_length=SIMPLE_RATE * SECOND,
-        )
+    def _random_multiply(self, audio, label):
+        return audio * tf.random.uniform(shape=(),minval=0.5,maxval=2.5,dtype=tf.float32), label
+
+    def _get_dataset(self,directory,val_split=0.0):
+        if val_split:
+            return tf.keras.utils.audio_dataset_from_directory(
+                directory=directory,
+                batch_size=BATCH_SIZE,
+                seed=np.random.randint(0,1000),
+                output_sequence_length=SAMPLE_LENGTH,
+                validation_split=val_split,
+                subset="both",
+            )
+        else:
+            return tf.keras.utils.audio_dataset_from_directory(
+                directory=directory,
+                batch_size=BATCH_SIZE,
+                seed=np.random.randint(0,1000),
+                output_sequence_length=SAMPLE_LENGTH,
+            )
     
     def _get_mel(self, ds):
         return ds.map(
@@ -78,7 +131,6 @@ class Dataset:
     
     @staticmethod
     def convert2mel(audio, sample_rate=SIMPLE_RATE,num_mel_bins=NUM_MEL_BINS, lower_edge_hertz=LOWER_EDGE_HERTZ, upper_edge_hertz=UPPER_EDGE_HERTZ):
-        # 计算 STFT
         stfts = tf.signal.stft(audio, frame_length=FRAME_LENGTH, frame_step=FRAME_STEP)
         # 获取频谱幅度
         spectrograms = tf.abs(stfts)
@@ -88,10 +140,12 @@ class Dataset:
             num_mel_bins, num_spectrogram_bins, sample_rate, lower_edge_hertz, upper_edge_hertz)
         # 将频谱转换为梅尔频谱
         mel_spectrograms = tf.tensordot(spectrograms, linear_to_mel_weight_matrix, 1)
+        print(mel_spectrograms.shape)
+        #打印mel_spectrograms里的最大值
         return mel_spectrograms
 
 class Sound_Classification_Model(tf.Module):
-    def __init__(self, model_type='GRU'):
+    def __init__(self, model_type='CNN'):
         self.model_type = model_type
         if model_type == 'GRU':
             self.model = self.GRU()
@@ -105,7 +159,7 @@ class Sound_Classification_Model(tf.Module):
             raise ValueError("model_type must be one of ['GRU','CNN','LSTM','DNN']")
         self.summary()
         self.__call__.get_concrete_function(
-        x=tf.TensorSpec(shape=[None, 16000], dtype=tf.float32))
+        x=tf.TensorSpec(shape=[None, SAMPLE_LENGTH], dtype=tf.float32))
 
 
     @tf.function
@@ -129,9 +183,12 @@ class Sound_Classification_Model(tf.Module):
         model = models.Sequential([
             layers.Input(shape=(FRAME_NUM,NUM_MEL_BINS),name='mel'),
             layers.Reshape((FRAME_NUM, NUM_MEL_BINS, 1)),
-            layers.Conv2D(3, (3, 3), activation='relu'),
-            layers.MaxPooling2D((2, 2)),
+            layers.Conv2D(12, 3, activation='relu'),
+            layers.MaxPooling2D(),
+            layers.Dropout(0.3),
             layers.Flatten(),
+            layers.Dense(32,activation='relu'),
+            layers.Dropout(0.3),
             layers.Dense(1,activation='sigmoid')
         ])
         return model
@@ -153,12 +210,24 @@ class Sound_Classification_Model(tf.Module):
         return model
     
     def fit(self,train_ds, val_ds, epochs=EPOCHS):
+        # total = 1800
+        # neg = 1500
+        # pos = 300
+        # weight_for_0 = (1 / neg)*(total)/2.0 
+        # weight_for_1 = (1 / pos)*(total)/2.0
+
+        # class_weight = {0: weight_for_0, 1: weight_for_1}
+
+        # print('Weight for class 0: {:.2f}'.format(weight_for_0))
+        # print('Weight for class 1: {:.2f}'.format(weight_for_1))
         self.history = self.model.fit(
             train_ds,
             validation_data=val_ds,
             batch_size=BATCH_SIZE,
             epochs=epochs,
-            callbacks=tf.keras.callbacks.EarlyStopping(verbose=1, patience=5),
+            callbacks=[tf.keras.callbacks.TensorBoard(log_dir="./logs")],
+            #class_weight=class_weight
+            #callbacks=[tf.keras.callbacks.EarlyStopping(verbose=1, patience=5),tf.keras.callbacks.TensorBoard(log_dir="./logs")],
         )
     
     def compile(self, optimizer, loss, metrics):
@@ -176,15 +245,16 @@ class Sound_Classification_Model(tf.Module):
         for key in keys:
             if not "loss" in key:
                 if not "val" in key:
-                    plt.plot(self.history.history[key], label=key)
+                    plt.plot(self.history.history[key][20:], label=key)
                 else:
                     lable_name = key.replace('val_','')
-                    plt.plot(self.history.history[key], label=lable_name)
+                    plt.plot(self.history.history[key][20:], label=key)
         plt.xlabel('Epoch')
         plt.legend()
         plt.subplot(3, 1, 2)
-        plt.plot(self.history.history['loss'], label='loss')
-        plt.plot(self.history.history['val_loss'], label='val_loss')
+        #从第20个epoch开始绘制
+        plt.plot(self.history.history['loss'][20:], label='loss')
+        plt.plot(self.history.history['val_loss'][20:], label='val_loss')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         plt.legend()
@@ -263,21 +333,79 @@ class Sound_Classification_Model(tf.Module):
 dataset = Dataset(TRAIN_DATASET_PATH)
 train, val, test = dataset.train_ds, dataset.val_ds, dataset.test_ds
 dataset.show(save=True)
-CNN = Sound_Classification_Model('GRU')
+initial_learning_rate = 0.001
+decay_steps = int(EPOCHS/10)
+decay_rate = 1/10
+lr_schedule =  tf.keras.optimizers.schedules.InverseTimeDecay(initial_learning_rate, decay_steps, decay_rate)
+CNN = Sound_Classification_Model('CNN')
 CNN.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+    optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule),
     loss=tf.keras.losses.BinaryCrossentropy(),
-    metrics=['AUC','accuracy'],
+    metrics=['AUC'],
 )
 CNN.fit(train, val, epochs=EPOCHS)
 CNN.evaluate(test,save=True)
 CNN.save(TF_MODEL , save_format='h5')
-LSTM = Sound_Classification_Model('LSTM')
-LSTM.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-    loss=tf.keras.losses.BinaryCrossentropy(),
-    metrics=['AUC','accuracy'],
-)
-LSTM.fit(train, val, epochs=EPOCHS)
-LSTM.evaluate(test,save=True)
-LSTM.save(TF_MODEL , save_format='h5')
+TFLITE_OUTPUT = TFLITE_MODEL % (DIR,'CNN')
+TP = 0
+FP = 0
+TN = 0
+FN = 0
+# def representative_data_gen():
+#   for input_value,lable in train.unbatch().batch(1).take(100):
+#     # Model has only one input so each data point has one element.
+#     yield [input_value]
+converter = tf.lite.TFLiteConverter.from_keras_model(CNN.model)
+converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS, tf.lite.OpsSet.SELECT_TF_OPS]
+converter._experimental_lower_tensor_list_ops = False
+#converter.optimizations = [tf.lite.Optimize.DEFAULT]
+# converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS, tf.lite.OpsSet.SELECT_TF_OPS]
+# converter._experimental_lower_tensor_list_ops = False
+#tflite_model=converter.convert()
+# converter = tf.lite.TFLiteConverter.from_keras_model(model)
+# converter.optimizations = [tf.lite.Optimize.DEFAULT]
+# converter.representative_dataset = representative_data_gen
+# converter.inference_input_type = tf.uint8
+# converter.inference_output_type = tf.uint8
+tflite_model = converter.convert()
+open(TFLITE_OUTPUT, "wb").write(tflite_model)
+interpreter = tf.lite.Interpreter(model_path=TFLITE_OUTPUT)
+interpreter.allocate_tensors() 
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+flag = 0
+for mel, label in test.unbatch().batch(1):
+    #mel = mel[...,tf.newaxis]
+    interpreter.set_tensor(input_details[0]['index'], mel)
+    interpreter.invoke()
+    output_data = interpreter.get_tensor(output_details[0]['index'])
+    #打印TP
+    if label == 1 and output_data[0][0] > 0.90:
+        TP += 1
+        #将第一个遇到的转为c数组，保存在snap.c
+        if flag == 0:
+            flag = 1
+            mel_c_array = np.array(mel).flatten()
+            mel_c_array = mel_c_array.astype(np.float32)
+            file = open(os.path.join(DIR,"snap.c"),"w")
+            line = []
+            line.append("const float mel[] = {")
+            for i in range(len(mel_c_array)):
+                line.append(str(mel_c_array[i]))
+                line.append(",")
+            line.append("};")
+            file.write("".join(line))
+            file.close()
+    if label == 0 and output_data[0][0] > 0.90:
+        FP += 1
+    if label == 0 and output_data[0][0] < 0.90:
+        TN += 1
+    if label == 1 and output_data[0][0] < 0.90:
+        FN += 1
+    #print(label, output_data[0][0])
+print("TP:", TP)
+print("FP:", FP)
+print("TN:", TN)
+print("FN:", FN)
+os.system("xxd -i %s > %s" % (TFLITE_OUTPUT, TFLITE_OUTPUT + ".h"))
